@@ -1,0 +1,11 @@
+
+conda activate scenic_env
+
+
+cd \Users\uabic\Desktop
+
+
+pyscenic grn PBMC10k_SCENIC.loom allTFs_hg38.txt -o adj.csv --num_workers 4
+
+pyscenic aucell PBMC10k_filtered.loom reg.csv --output PBMC10k_SCENIC.loom --num_workers 4
+

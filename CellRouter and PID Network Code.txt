@@ -1,0 +1,175 @@
+CELLROUTER NOTES
+source('C:/Users/15145/Desktop/CellRouter/cellrouter-master/CellRouter_Class.R')
+libdir <-'C:/Users/15145/Desktop/CellRouter/cellrouter-master'
+library('dplyr')
+
+setwd("C:/Users/15145/Desktop")
+
+data <- read.csv(file = "K27M.csv", row.names=1)
+
+cellrouter <- CellRouter(data, min.cells=3, min.genes=0)
+
+#mito.genes <- grep(pattern = "^mt-", x = rownames(x = cellrouter@ndata), value = TRUE)
+#percent.mito <- Matrix::colSums(expdat[mito.genes, ])/Matrix::colSums(expdat)
+#cellrouter <- addInfo(cellrouter, percent.mito, 'percent.mito')
+#cellrouter <- filterCells(cellrouter, variables <- c("nGene", 'nUMI',"percent.mito"), thresholds.low <- c(500, 1000, -Inf), thresholds.high <- c(7000, Inf, 0.10))
+
+cellrouter <- Normalize(cellrouter)
+cellrouter <- scaleData(cellrouter)
+cellrouter <- computePCA(cellrouter, num.pcs = 50, seed=42) #build knn graph on the PCA/DC space
+plot(cellrouter@pca$sdev, xlab='PC', ylab='Standard deviation of PC')
+
+#Without metadata/annotations, proceed with the online tutorial.
+In this case you have to first perform clustering (with function findClusters), then plotReducedDimensions: 
+#Graph-based clustering:
+ cellrouter <- findClusters(cellrouter, method="graph.clustering", num.pcs=15, k=20)  
+#Then you can do tSNE:
+ cellrouter <- computeTSNE(cellrouter, num.pcs = 11, seed=42, max_iter = 1000) 
+#And see the tSNE with clusters (indicating "population" to say that you want to overlay the clusters on top of tSNE:
+plotReducedDimension(cellrouter, reduction.type = 'tsne', dims.use = c(1,2), annotation = "population", annotation.color = 'colors', showlabels = TRUE, 4.5, 3.5, filename='results/tSNE_1.pdf') 
+
+#Then continue with the rest of the tutorial:
+plotReducedDimension(cellrouter, reduction.type = 'pca', dims.use = c(1,2), annotation = "population", annotation.color = 'colors', showlabels = FALSE, 4.5, 3.5, filename='results/PCA_1.pdf')
+
+# perform differential expression analysis and identify sub-population specific gene signatures
+
+markers <- findSignatures(cellrouter, pos.only = TRUE, fc.threshold = 0.5)
+
+#Subpopulation markers were assessed in 12 clusters
+top10 <- markers %>% group_by(population) %>% top_n(10, fc)
+
+filename <- 'results/heatmap_top_10_genes_sorted_populations.png'
+
+plotSignaturesHeatmap(cellrouter, markers = top10, column.ann = 'population', column.color = 'colors', threshold = 2, width = 20, height = 20, filename=filename)
+
+# CellRouter provides a function to perform graph-based clustering and another to perform model-based clustering
+
+cellrouter <- findClusters(cellrouter, method="graph.clustering", num.pcs=15, k=20)
+
+plotReducedDimension(cellrouter, reduction.type = 'tsne', annotation="population", annotation.color = 'colors',showlabels = TRUE, width = 4.5, height = 3.5, filename='results/tSNE_graphClustering_clusters.pdf')
+
+#Model-based clustering:
+#cellrouter <- findClusters(cellrouter, method='model.clustering', num.pcs = 15)
+#plotReducedDimension(cellrouter, reduction.type = 'tsne', annotation="population", annotation.color = 'colors',showlabels = TRUE, width = 4.5, height = 3.5, filename='results/tSNE_modelClustering_clusters.pdf')
+
+##Signatures based on clusters identified by CellRouter
+markers <- findSignatures(cellrouter, column = 'population', pos.only = TRUE, fc.threshold = 0.5)
+
+filename <- 'results/heatmap_all_genes_CellRouter_clusters.png' #select how many cells to plot as well!
+plotSignaturesHeatmap(cellrouter, markers, column.ann = 'population', column.color  = 'colors', num.cells=100, threshold =  2.5, width = 15, height = 13, filename = filename)
+
+top10 <- markers %>% group_by(population) %>% top_n(10, fc)
+filename <- 'results/heatmap_top_10_genes_CellRouter_clusters.png' #select how many cells to plot as well!
+plotSignaturesHeatmap(cellrouter, top10, column.ann = 'population', column.color  = 'colors', threshold =  2.5, width = 15, height = 13, filename = filename)
+
+
+
+#Trajectory Analysis
+
+#Trajectories can be identified between clusters identified by Paul et al using:
+cellrouter <- buildKNN(cellrouter, k = 10, column.ann = 'population', num.pcs = 20, sim.type = 'jaccard')
+
+library(ggnetwork)
+
+plotKNN(cellrouter, reduction.type = 'tsne', column.ann = 'population', column.color = 'colors', width = 5, height = 4, filename='results/knn_tsne_original_clusters.pdf')
+
+plotReducedDimension(cellrouter, reduction.type = 'tsne', annotation="population", annotation.color = 'colors',showlabels = TRUE, width = 4.5, height = 3.5, filename='results/tSNE_graphClustering_clusters.pdf')
+
+filename <- "results/paths/cell_edge_weighted_network.txt"
+write.table(cellrouter@graph$edges, file=filename, sep='\t', row.names=FALSE, col.names = FALSE, quote=FALSE) #input network
+
+
+
+#Select populations 
+
+sources <- c('1')
+targets <- setdiff(as.vector(cellrouter@sampTab$population), sources)
+methods <- c("euclidean", "maximum", "manhattan","canberra","binary", 'graph') #graph for distances in KNN
+
+cellrouter <- findPaths(cellrouter, column='population', libdir, paste(getwd(), 'results/paths', sep='/'), method="graph")
+
+library(igraph)
+#Preprocess trajectories
+ranks <- c('path_cost', 'path_flow', 'rank', 'length')
+cellrouter <- processTrajectories(cellrouter, rownames(cellrouter@ndata), path.rank=ranks[3], num.cells = 3, neighs = 3,column.ann = 'population', column.color = 'colors')
+
+
+names <- unique(names(cellrouter@pathsinfo$distr))
+##Identify genes regulated along each trajectory (up or down-regulated)
+cellrouter <- correlationPseudotime(cellrouter, type='spearman')
+
+cellrouter <- topGenes(cellrouter, 0.8, 0.1)
+
+cellrouter <- smoothDynamics(cellrouter, names)
+cellrouter <- clusterGenesPseudotime(cellrouter, 5)
+save(cellrouter, file='results/CellRouter_Processed.R')
+
+
+
+#Create Gene Regulatory Network
+
+#Create gene regulatory network
+
+#Create gene regulatory network
+grn.data <- buildGRN(cellrouter, species = 'Hs', genes.use = rownames(cellrouter@ndata), zscore = 5, filename = 'results/GRN.R')
+
+
+#plot clusters of kinetic changes along trajectories
+plotClusterHeatmap(cellrouter, names, 10, 10, 2, 'results/dynamics.pdf')
+
+JULIACODE FOR PID NETWORKS:
+
+Code: https://github.com/Tchanders/NetworkInference.jl#scope 
+import Pkg
+Pkg.add("NetworkInference")
+using Julia NetworkInference.jl package
+using NetworkInference
+infer_network("/Users/15145/Desktop/Glioma.txt", PIDCNetworkInference())
+nodes = get_nodes("/Users/15145/Desktop/Glioma.txt")
+inferred_network = InferredNetwork(PIDCNetworkInference(), nodes)
+write_network_file("/Users/15145/Desktop/PIDGlioma.txt",inferred_network)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+JULIA CODE
+import Pkg
+Pkg.add("NetworkInference")
+
+using NetworkInference
+
+# Paths
+base_path = "C:/Users/uabic/Desktop/Gene sets"
+
+# File names (without extensions)
+file_names = ["selected_HVGIDHWT", "selected_HVGK27M", "selected_TopFeatIDHWT", "selected_TopFeatK27M", "selected_scEpathIDHWT", "selected_scEpathK27M"]
+
+for file_name in file_names
+    input_file = "$base_path/$file_name.txt"
+    output_file = "$base_path/PID_$file_name.txt"
+    
+    # Infer network
+    infer_network(input_file, PIDCNetworkInference())
+    nodes = get_nodes(input_file)
+    inferred_network = InferredNetwork(PIDCNetworkInference(), nodes)
+    write_network_file(output_file, inferred_network)
+end
+
